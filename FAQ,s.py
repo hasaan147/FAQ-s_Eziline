@@ -1,88 +1,51 @@
 import streamlit as st
-from datasets import Dataset
-import pandas as pd
-from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
+from transformers import BertTokenizer, BertForSequenceClassification
 import torch
+from datasets import load_dataset
 
-# Load the pre-trained BERT tokenizer
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+# Load the trained BERT model and tokenizer
+model_path = './bert_faq_model'
+model = BertForSequenceClassification.from_pretrained(model_path)
+tokenizer = BertTokenizer.from_pretrained(model_path)
 
-# Function to tokenize the input text
-def tokenize_function(examples):
-    return tokenizer(examples['Question'], padding='max_length', truncation=True)
+# Function to tokenize input text
+def tokenize_text(text):
+    return tokenizer(text, padding='max_length', truncation=True, return_tensors="pt")
 
-# Function to map labels
-def map_labels(example, label_mapping):
-    key = tuple(example['Answer'])
-    if key not in label_mapping:
-        key = tuple([example['Answer'][0]])  # Handle case where key isn't found
-    example['label'] = label_mapping[key]
-    return example
+# Define label mapping (Assumed based on your training)
+label_mapping = {0: 'Label1', 1: 'Label2'}  # Update based on your unique labels
 
-# Main Streamlit app function
-def main():
-    st.title("BERT Fine-tuning with Custom Dataset")
+# Streamlit app UI
+st.title("BERT FAQ Model")
 
-    # File upload option
-    uploaded_file = st.file_uploader("Upload CSV Dataset", type="csv")
-    
-    if uploaded_file is not None:
-        # Read the uploaded CSV file into a pandas DataFrame
-        df = pd.read_csv(uploaded_file)
+# Upload CSV file
+uploaded_file = st.file_uploader("Upload your dataset (CSV file)", type="csv")
+if uploaded_file is not None:
+    dataset = load_dataset('csv', data_files=uploaded_file)
+    st.write("Dataset uploaded successfully!")
+
+# Input for question
+question = st.text_input("Enter your question:")
+
+if st.button('Predict'):
+    if question:
+        # Tokenize input question
+        tokenized_input = tokenize_text(question)
         
-        # Convert the pandas DataFrame to a Hugging Face Dataset
-        dataset = Dataset.from_pandas(df)
+        # Make prediction
+        with torch.no_grad():
+            outputs = model(**tokenized_input)
+            logits = outputs.logits
+            predicted_label = torch.argmax(logits, dim=1).item()
 
-        # Tokenize dataset
-        st.write("Tokenizing the dataset...")
-        tokenized_datasets = dataset.map(tokenize_function, batched=True)
+        # Get the corresponding label
+        predicted_class = label_mapping.get(predicted_label, "Unknown")
+        
+        # Display prediction
+        st.write(f"Predicted Answer: {predicted_class}")
+    else:
+        st.write("Please enter a question.")
 
-        # Mapping labels
-        st.write("Mapping labels...")
-        unique_labels = list(set([tuple(answer) for answer in tokenized_datasets['Answer']]))
-        label_mapping = {}
-        for idx, label in enumerate(unique_labels):
-            label_mapping[label] = idx
-            if len(label) > 1:
-                for sub_label in label:
-                    label_mapping[tuple([sub_label])] = idx
+# Option to download the trained model
+st.download_button('Download Trained Model', data=open(f"{model_path}/pytorch_model.bin", 'rb'), file_name='bert_faq_model.bin')
 
-        tokenized_datasets = tokenized_datasets.map(lambda x: map_labels(x, label_mapping), batched=False)
-
-        # Train/Test split
-        st.write("Splitting dataset into train/test sets...")
-        tokenized_datasets = tokenized_datasets.train_test_split(test_size=0.2)
-
-        # Load the pre-trained BERT model for sequence classification
-        st.write("Loading BERT model...")
-        model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=len(unique_labels))
-
-        # Training arguments
-        training_args = TrainingArguments(
-            output_dir='./results',
-            evaluation_strategy="epoch",
-            learning_rate=2e-5,
-            per_device_train_batch_size=16,
-            per_device_eval_batch_size=16,
-            num_train_epochs=3,
-            weight_decay=0.01
-        )
-
-        # Define the Trainer
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_datasets['train'],
-            eval_dataset=tokenized_datasets['test'],
-            tokenizer=tokenizer,
-            compute_metrics=None  # Add metrics if needed
-        )
-
-        # Train the model
-        st.write("Training the model...")
-        trainer.train()
-
-        st.write("Training complete!")
-
-if __name__ == "__main__":
-    main()
